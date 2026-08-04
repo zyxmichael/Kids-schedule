@@ -365,15 +365,15 @@
     <div class="kids-config">
         <div class="kid-card c1">
             <label>大娃名称：</label>
-            <input type="text" id="kid1Name" value="老大" onchange="updateKidNames()">
+            <input type="text" id="kid1Name" value="老大" onblur="saveKidNamesToCloud()">
         </div>
         <div class="kid-card c2">
             <label>二娃名称：</label>
-            <input type="text" id="kid2Name" value="老二" onchange="updateKidNames()">
+            <input type="text" id="kid2Name" value="老二" onblur="saveKidNamesToCloud()">
         </div>
         <div class="kid-card c3">
             <label>三娃名称：</label>
-            <input type="text" id="kid3Name" value="老三" onchange="updateKidNames()">
+            <input type="text" id="kid3Name" value="老三" onblur="saveKidNamesToCloud()">
         </div>
     </div>
 
@@ -478,14 +478,6 @@
         document.getElementById('sbUrl').value = savedUrl;
         document.getElementById('sbKey').value = savedKey;
 
-        const savedKids = localStorage.getItem('local_kids');
-        if (savedKids) state.kids = JSON.parse(savedKids);
-        
-        document.getElementById('kid1Name').value = state.kids.kid1;
-        document.getElementById('kid2Name').value = state.kids.kid2;
-        document.getElementById('kid3Name').value = state.kids.kid3;
-        updateKidNamesUI();
-
         if (savedUrl && savedKey) {
             connectSupabase(savedUrl, savedKey);
         } else {
@@ -512,14 +504,23 @@
             setStatus('syncing', '正在连接 Supabase...');
             supabaseClient = supabase.createClient(url, key);
             
-            // 拉取初始数据
+            // 拉取课程与名字配置
+            fetchKidNames();
             fetchCourses();
 
-            // 订阅 Supabase Realtime 实时数据更新变化
+            // 订阅课程表变化
             supabaseClient
                 .channel('public:courses')
                 .on('postgres_changes', { event: '*', schema: 'public', table: 'courses' }, payload => {
                     fetchCourses();
+                })
+                .subscribe();
+
+            // 订阅名字配置变化
+            supabaseClient
+                .channel('public:kids_config')
+                .on('postgres_changes', { event: '*', schema: 'public', table: 'kids_config' }, payload => {
+                    fetchKidNames();
                 })
                 .subscribe();
 
@@ -528,16 +529,39 @@
         }
     }
 
+    async function fetchKidNames() {
+        if (!supabaseClient) return;
+        const { data, error } = await supabaseClient.from('kids_config').select('*').eq('id', 'default').single();
+        if (data) {
+            state.kids.kid1 = data.kid1 || '老大';
+            state.kids.kid2 = data.kid2 || '老二';
+            state.kids.kid3 = data.kid3 || '老三';
+            document.getElementById('kid1Name').value = state.kids.kid1;
+            document.getElementById('kid2Name').value = state.kids.kid2;
+            document.getElementById('kid3Name').value = state.kids.kid3;
+            updateKidNamesUI();
+            renderTable();
+        }
+    }
+
+    async function saveKidNamesToCloud() {
+        const k1 = document.getElementById('kid1Name').value.trim() || '老大';
+        const k2 = document.getElementById('kid2Name').value.trim() || '老二';
+        const k3 = document.getElementById('kid3Name').value.trim() || '老三';
+
+        state.kids = { kid1: k1, kid2: k2, kid3: k3 };
+        updateKidNamesUI();
+        renderTable();
+
+        if (supabaseClient) {
+            await supabaseClient.from('kids_config').upsert({ id: 'default', kid1: k1, kid2: k2, kid3: k3 });
+        }
+    }
+
     async function fetchCourses() {
         if (!supabaseClient) return;
-        
-        const { data, error } = await supabaseClient
-            .from('courses')
-            .select('*');
-
-        if (error) {
-            setStatus('error', '数据拉取失败: ' + error.message);
-        } else {
+        const { data, error } = await supabaseClient.from('courses').select('*');
+        if (!error) {
             state.courses = data || [];
             renderTable();
             setStatus('online', `🟢 云端秒级同步已就绪 (${new Date().toLocaleTimeString()})`);
@@ -564,38 +588,20 @@
             const { error } = await supabaseClient.from('courses').insert([newCourse]);
             if (error) {
                 alert('保存失败: ' + error.message);
-                setStatus('error', '云端写入错误');
                 return;
             }
             document.getElementById('inputTitle').value = '';
             document.getElementById('inputLocation').value = '';
             fetchCourses();
-        } else {
-            alert('请先在顶部连接 Supabase 数据库！');
         }
     }
 
     async function deleteCourse(id) {
-        if (!confirm('确定要删除这个课程吗？所有家人的手机上都会随之实时消失。')) return;
-
+        if (!confirm('确定要删除这个课程吗？')) return;
         if (supabaseClient) {
-            setStatus('syncing', '从云端删除...');
-            const { error } = await supabaseClient.from('courses').delete().eq('id', id);
-            if (error) {
-                alert('删除失败: ' + error.message);
-            } else {
-                fetchCourses();
-            }
+            await supabaseClient.from('courses').delete().eq('id', id);
+            fetchCourses();
         }
-    }
-
-    function updateKidNames() {
-        state.kids.kid1 = document.getElementById('kid1Name').value.trim() || '老大';
-        state.kids.kid2 = document.getElementById('kid2Name').value.trim() || '老二';
-        state.kids.kid3 = document.getElementById('kid3Name').value.trim() || '老三';
-        localStorage.setItem('local_kids', JSON.stringify(state.kids));
-        updateKidNamesUI();
-        renderTable();
     }
 
     function updateKidNamesUI() {
